@@ -5,29 +5,26 @@ from typing import List
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 
-# -----------------------------
-# Environment safety (IMPORTANT)
-# -----------------------------
+# --------------------------------------------------
+# Environment safety (CRITICAL for Render)
+# --------------------------------------------------
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
-# -----------------------------
-# LangChain imports (stable)
-# -----------------------------
+# --------------------------------------------------
+# LangChain imports (STABLE & SAFE)
+# --------------------------------------------------
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_groq import ChatGroq
 
-# Embeddings (lazy-loaded)
-from langchain_community.embeddings import HuggingFaceEmbeddings
-
-
-# -----------------------------
+# --------------------------------------------------
 # FastAPI App
-# -----------------------------
+# --------------------------------------------------
 app = FastAPI(title="Research Copilot (RAG API)")
 
 app.add_middleware(
@@ -37,19 +34,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -----------------------------
-# Lazy Embeddings Loader (CRITICAL FIX)
-# -----------------------------
+# --------------------------------------------------
+# Lazy Embeddings Loader (RENDER-SAFE)
+# --------------------------------------------------
 def get_embeddings():
     return HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2",
-        cache_folder="/tmp"  # Render-safe cache
+        cache_folder="/tmp"  # Writable on Render
     )
 
-
-# -----------------------------
+# --------------------------------------------------
 # Helpers
-# -----------------------------
+# --------------------------------------------------
 def detect_section(text: str) -> str:
     t = text.lower()[:300]
     if "abstract" in t:
@@ -81,10 +77,9 @@ def load_pdfs(files: List[UploadFile]):
 
     return documents
 
-
-# -----------------------------
+# --------------------------------------------------
 # API Endpoint
-# -----------------------------
+# --------------------------------------------------
 @app.post("/analyze")
 async def analyze_papers(
     files: List[UploadFile] = File(...),
@@ -92,6 +87,13 @@ async def analyze_papers(
 ):
     # 1. Load PDFs
     documents = load_pdfs(files)
+
+    if not documents:
+        return {
+            "answer": "No readable text found in the uploaded papers.",
+            "citations": [],
+            "confidence": 0.0
+        }
 
     # 2. Chunk documents
     splitter = RecursiveCharacterTextSplitter(
@@ -104,10 +106,10 @@ async def analyze_papers(
     texts = [d.page_content for d in docs]
     metadatas = [d.metadata for d in docs]
 
-    # 4. Create embeddings (LAZY)
+    # 4. Embeddings (lazy)
     embeddings = get_embeddings()
 
-    # 5. Build FAISS vector store
+    # 5. FAISS Vector Store
     vectorstore = FAISS.from_texts(
         texts=texts,
         embedding=embeddings,
@@ -116,7 +118,17 @@ async def analyze_papers(
 
     retriever = vectorstore.as_retriever(search_kwargs={"k": 6})
 
-    # 6. Prompt (hallucination-safe)
+    # 6. Retrieve documents FIRST (IMPORTANT)
+    source_docs = retriever.invoke(query)
+
+    if not source_docs:
+        return {
+            "answer": "Not found in the uploaded papers.",
+            "citations": [],
+            "confidence": 0.0
+        }
+
+    # 7. Prompt (anti-hallucination)
     prompt = PromptTemplate.from_template(
         """
 You are an academic research assistant.
@@ -136,13 +148,13 @@ Answer:
 """
     )
 
-    # 7. LLM (Groq)
+    # 8. LLM (Groq)
     llm = ChatGroq(
         model="llama-3.1-8b-instant",
         temperature=0
     )
 
-    # 8. RAG Chain (Runnable API)
+    # 9. RAG Chain (Runnable API)
     rag_chain = (
         {
             "context": retriever,
@@ -152,12 +164,14 @@ Answer:
         | llm
     )
 
-    # 9. Run RAG
-    response = rag_chain.invoke(query)
+    # 10. Safe execution
+    try:
+        response = rag_chain.invoke(query)
+        answer = response.content
+    except Exception:
+        answer = "Not found in the uploaded papers."
 
-    # 10. Source documents
-    source_docs = retriever.invoke(query)
-
+    # 11. Citations
     citations = list(
         {
             f"{d.metadata.get('paper')} | {d.metadata.get('section')}"
@@ -166,7 +180,7 @@ Answer:
     )
 
     return {
-        "answer": response.content,
+        "answer": answer,
         "citations": citations,
         "confidence": min(0.95, len(source_docs) * 0.15)
     }
