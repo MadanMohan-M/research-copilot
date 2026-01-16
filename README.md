@@ -74,36 +74,56 @@ Copy code
 
 ### Clone Repository
 
-```bash
 git clone https://github.com/YOUR_USERNAME/research-copilot.git
+
 cd research-copilot
-Backend Setup:
+
+## Backend Setup:
+
 cd backend
+
 pip install -r requirements.txt
+
 set GROQ_API_KEY=your_api_key_here
+
 uvicorn main:app --reload
-Backend runs at:
+
+## Backend runs at:
+
 http://localhost:8000
-Frontend Setup:
+
+## Frontend Setup:
+
 cd frontend
+
 pip install -r requirements.txt
+
 streamlit run app.py
-Frontend runs at:
+
+## Frontend runs at:
+
 http://localhost:8501
-Deployment on Render
+
+## Deployment on Render:
+
 Backend and frontend are deployed as separate Render Web Services
+
 Environment variable GROQ_API_KEY is set in Render
+
 Backend exposed via /analyze API
+
 Frontend connects to backend using deployed URL
 
-Limitations
+## Limitations
+
 Free Render instances may experience cold starts
 
 Large PDFs may increase response latency
 
 No persistent database (sessions stored in memory)
 
-Future Improvements
+## Future Improvements
+
 Persistent chat history with database
 
 PDF page-level citations
@@ -116,9 +136,11 @@ Streaming token-level responses
 
 Support for additional document formats
 
-Author
-Built by Mokka Madan Yadav
+## Author
+
+Built by Mokka Madan mohan Yadav
 AI / ML Developer
 
-License
+## License
+
 This project is licensed under the MIT License.
