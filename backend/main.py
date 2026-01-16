@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # Environment safety (IMPORTANT)
 # -----------------------------
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
-os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
 # -----------------------------
 # LangChain imports (stable)
