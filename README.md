@@ -77,36 +77,23 @@ Copy code
 ```bash
 git clone https://github.com/YOUR_USERNAME/research-copilot.git
 cd research-copilot
-Backend Setup
-bash
-Copy code
+Backend Setup:
 cd backend
 pip install -r requirements.txt
 set GROQ_API_KEY=your_api_key_here
 uvicorn main:app --reload
 Backend runs at:
-
-arduino
-Copy code
 http://localhost:8000
-Frontend Setup
-bash
-Copy code
+Frontend Setup:
 cd frontend
 pip install -r requirements.txt
 streamlit run app.py
 Frontend runs at:
-
-arduino
-Copy code
 http://localhost:8501
 Deployment on Render
 Backend and frontend are deployed as separate Render Web Services
-
 Environment variable GROQ_API_KEY is set in Render
-
 Backend exposed via /analyze API
-
 Frontend connects to backend using deployed URL
 
 Limitations
