@@ -6,7 +6,7 @@ from uuid import uuid4
 # =========================================================
 # CONFIG
 # =========================================================
-BACKEND_URL = "http://localhost:8000/analyze"
+BACKEND_URL = "https://research-copilot-xkcj.onrender.com/analyze"
 
 st.set_page_config(
     page_title="Research Co-Pilot",
