@@ -74,7 +74,7 @@ Copy code
 
 ### Clone Repository
 
-git clone https://github.com/YOUR_USERNAME/research-copilot.git
+git clone https://github.com/MadanMohan-M/research-copilot
 
 cd research-copilot
 
