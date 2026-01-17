@@ -6,20 +6,19 @@ from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 
 # --------------------------------------------------
-# Environment safety (CRITICAL for Render)
+# Environment safety (Render / Cloud)
 # --------------------------------------------------
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
 # --------------------------------------------------
-# LangChain imports (STABLE & SAFE)
+# LangChain imports (STABLE)
 # --------------------------------------------------
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.prompts import PromptTemplate
-from langchain_core.runnables import RunnablePassthrough
 from langchain_groq import ChatGroq
 
 # --------------------------------------------------
@@ -35,12 +34,12 @@ app.add_middleware(
 )
 
 # --------------------------------------------------
-# Lazy Embeddings Loader (RENDER-SAFE)
+# Embeddings (lazy + cloud-safe)
 # --------------------------------------------------
 def get_embeddings():
     return HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2",
-        cache_folder="/tmp"  # Writable on Render
+        cache_folder="/tmp"
     )
 
 # --------------------------------------------------
@@ -50,7 +49,7 @@ def detect_section(text: str) -> str:
     t = text.lower()[:300]
     if "abstract" in t:
         return "Abstract"
-    if "method" in t:
+    if "method" in t or "methodology" in t:
         return "Methodology"
     if "result" in t:
         return "Results"
@@ -77,6 +76,28 @@ def load_pdfs(files: List[UploadFile]):
 
     return documents
 
+
+def build_context(docs, max_chars=6000):
+    """
+    Explicitly constructs grounded context.
+    Prevents hallucinations.
+    """
+    context_parts = []
+    total_chars = 0
+
+    for doc in docs:
+        text = doc.page_content.strip()
+        header = f"[{doc.metadata.get('paper')} | {doc.metadata.get('section')}]"
+        block = f"{header}\n{text}"
+
+        if total_chars + len(block) > max_chars:
+            break
+
+        context_parts.append(block)
+        total_chars += len(block)
+
+    return "\n\n".join(context_parts)
+
 # --------------------------------------------------
 # API Endpoint
 # --------------------------------------------------
@@ -97,46 +118,37 @@ async def analyze_papers(
 
     # 2. Chunk documents
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1200,
-        chunk_overlap=200
+        chunk_size=1000,
+        chunk_overlap=150
     )
-    docs = splitter.split_documents(documents)
+    chunks = splitter.split_documents(documents)
 
-    # 3. Prepare text + metadata
-    texts = [d.page_content for d in docs]
-    metadatas = [d.metadata for d in docs]
-
-    # 4. Embeddings (lazy)
+    # 3. Vector store
     embeddings = get_embeddings()
-
-    # 5. FAISS Vector Store
-    vectorstore = FAISS.from_texts(
-        texts=texts,
-        embedding=embeddings,
-        metadatas=metadatas
-    )
-
+    vectorstore = FAISS.from_documents(chunks, embeddings)
     retriever = vectorstore.as_retriever(search_kwargs={"k": 6})
 
-    # 6. Retrieve documents FIRST (IMPORTANT)
-    source_docs = retriever.invoke(query)
+    # 4. Retrieve relevant chunks (CORRECT API)
+    retrieved_docs = retriever.invoke(query)
 
-    if not source_docs:
+    if not retrieved_docs:
         return {
-            "answer": "Not found in the uploaded papers.",
+            "answer": "Not found in the papers.",
             "citations": [],
             "confidence": 0.0
         }
 
-    # 7. Prompt (anti-hallucination)
+    # 5. Build grounded context
+    context_text = build_context(retrieved_docs)
+
+    # 6. Prompt (STRICT grounding)
     prompt = PromptTemplate.from_template(
         """
 You are an academic research assistant.
 
-Answer ONLY from the given context.
-Do NOT use external knowledge.
-If the answer is not found, say:
-"Not found in the papers".
+Answer ONLY using the context below.
+If the answer is not explicitly stated, reply exactly:
+"Not found in the papers."
 
 Context:
 {context}
@@ -148,39 +160,30 @@ Answer:
 """
     )
 
-    # 8. LLM (Groq)
+    # 7. LLM
     llm = ChatGroq(
         model="llama-3.1-8b-instant",
         temperature=0
     )
 
-    # 9. RAG Chain (Runnable API)
-    rag_chain = (
-        {
-            "context": retriever,
-            "question": RunnablePassthrough()
-        }
-        | prompt
-        | llm
+    # 8. Final answer generation
+    response = llm.invoke(
+        prompt.format(
+            context=context_text,
+            question=query
+        )
     )
 
-    # 10. Safe execution
-    try:
-        response = rag_chain.invoke(query)
-        answer = response.content
-    except Exception:
-        answer = "Not found in the uploaded papers."
-
-    # 11. Citations
-    citations = list(
+    # 9. Citations
+    citations = sorted(
         {
             f"{d.metadata.get('paper')} | {d.metadata.get('section')}"
-            for d in source_docs
+            for d in retrieved_docs
         }
     )
 
     return {
-        "answer": answer,
+        "answer": response.content.strip(),
         "citations": citations,
-        "confidence": min(0.95, len(source_docs) * 0.15)
+        "confidence": min(0.95, len(retrieved_docs) * 0.15)
     }
