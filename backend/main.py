@@ -5,15 +5,15 @@ from typing import List
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 
-# --------------------------------------------------
-# Environment safety (Render / Cloud)
-# --------------------------------------------------
+# -----------------------------
+# Render safety
+# -----------------------------
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
-# --------------------------------------------------
-# LangChain imports (STABLE)
-# --------------------------------------------------
+# -----------------------------
+# LangChain imports
+# -----------------------------
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
@@ -21,9 +21,9 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.prompts import PromptTemplate
 from langchain_groq import ChatGroq
 
-# --------------------------------------------------
-# FastAPI App
-# --------------------------------------------------
+# -----------------------------
+# FastAPI app
+# -----------------------------
 app = FastAPI(title="Research Copilot (RAG API)")
 
 app.add_middleware(
@@ -33,23 +33,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --------------------------------------------------
-# Embeddings (lazy + cloud-safe)
-# --------------------------------------------------
+# -----------------------------
+# Embeddings (lazy, Render-safe)
+# -----------------------------
 def get_embeddings():
     return HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2",
         cache_folder="/tmp"
     )
 
-# --------------------------------------------------
+# -----------------------------
 # Helpers
-# --------------------------------------------------
+# -----------------------------
 def detect_section(text: str) -> str:
     t = text.lower()[:300]
     if "abstract" in t:
         return "Abstract"
-    if "method" in t or "methodology" in t:
+    if "method" in t:
         return "Methodology"
     if "result" in t:
         return "Results"
@@ -59,8 +59,7 @@ def detect_section(text: str) -> str:
 
 
 def load_pdfs(files: List[UploadFile]):
-    documents = []
-
+    docs = []
     for file in files:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(file.file.read())
@@ -69,66 +68,51 @@ def load_pdfs(files: List[UploadFile]):
         loader = PyPDFLoader(path)
         pages = loader.load()
 
-        for page in pages:
-            page.metadata["paper"] = file.filename
-            page.metadata["section"] = detect_section(page.page_content)
-            documents.append(page)
+        for p in pages:
+            p.metadata["paper"] = file.filename
+            p.metadata["section"] = detect_section(p.page_content)
+            docs.append(p)
 
-    return documents
+    return docs
 
 
-def build_context(docs, max_chars=6000):
-    """
-    Explicitly constructs grounded context.
-    Prevents hallucinations.
-    """
-    context_parts = []
-    total_chars = 0
-
-    for doc in docs:
-        text = doc.page_content.strip()
-        header = f"[{doc.metadata.get('paper')} | {doc.metadata.get('section')}]"
-        block = f"{header}\n{text}"
-
-        if total_chars + len(block) > max_chars:
+def build_context(docs, max_chars=5000):
+    context = ""
+    for d in docs:
+        if len(context) > max_chars:
             break
+        context += f"\n[{d.metadata['paper']} | {d.metadata['section']}]\n"
+        context += d.page_content.strip()
+    return context.strip()
 
-        context_parts.append(block)
-        total_chars += len(block)
-
-    return "\n\n".join(context_parts)
-
-# --------------------------------------------------
-# API Endpoint
-# --------------------------------------------------
+# -----------------------------
+# API endpoint
+# -----------------------------
 @app.post("/analyze")
 async def analyze_papers(
     files: List[UploadFile] = File(...),
     query: str = Form(...)
 ):
-    # 1. Load PDFs
     documents = load_pdfs(files)
-
     if not documents:
         return {
-            "answer": "No readable text found in the uploaded papers.",
+            "answer": "No readable content found.",
             "citations": [],
             "confidence": 0.0
         }
 
-    # 2. Chunk documents
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
+        chunk_size=800,
         chunk_overlap=150
     )
     chunks = splitter.split_documents(documents)
 
-    # 3. Vector store
     embeddings = get_embeddings()
     vectorstore = FAISS.from_documents(chunks, embeddings)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 6})
 
-    # 4. Retrieve relevant chunks (CORRECT API)
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+
+    # ✅ CORRECT retrieval (NO deprecated APIs)
     retrieved_docs = retriever.invoke(query)
 
     if not retrieved_docs:
@@ -138,16 +122,12 @@ async def analyze_papers(
             "confidence": 0.0
         }
 
-    # 5. Build grounded context
-    context_text = build_context(retrieved_docs)
+    context = build_context(retrieved_docs)
 
-    # 6. Prompt (STRICT grounding)
     prompt = PromptTemplate.from_template(
         """
-You are an academic research assistant.
-
 Answer ONLY using the context below.
-If the answer is not explicitly stated, reply exactly:
+If the answer is not present, reply exactly:
 "Not found in the papers."
 
 Context:
@@ -160,30 +140,22 @@ Answer:
 """
     )
 
-    # 7. LLM
     llm = ChatGroq(
         model="llama-3.1-8b-instant",
         temperature=0
     )
 
-    # 8. Final answer generation
     response = llm.invoke(
-        prompt.format(
-            context=context_text,
-            question=query
-        )
+        prompt.format(context=context, question=query)
     )
 
-    # 9. Citations
-    citations = sorted(
-        {
-            f"{d.metadata.get('paper')} | {d.metadata.get('section')}"
-            for d in retrieved_docs
-        }
-    )
+    citations = list({
+        f"{d.metadata['paper']} | {d.metadata['section']}"
+        for d in retrieved_docs
+    })
 
     return {
-        "answer": response.content.strip(),
+        "answer": response.content,
         "citations": citations,
         "confidence": min(0.95, len(retrieved_docs) * 0.15)
     }
